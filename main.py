@@ -206,7 +206,7 @@ async def set_automation_index(value: int):
     await HTTP_CLIENT.patch(url, headers=HEADERS, json=payload)
 
 @app.get("/batch-update-animes/")
-async def batch_update_animes(dry_run: bool = Query(True, description="If true, do not update Notion, just simulate")):
+async def batch_update_animes(dry_run: bool = Query(False, description="If true, do not update Notion, just simulate")):
     pages = await fetch_notion_pages()
     total_pages = len(pages)
     results = []
