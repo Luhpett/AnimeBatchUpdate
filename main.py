@@ -46,9 +46,9 @@ HTTP_CLIENT = httpx.AsyncClient(
 # ----------------------------
 # Concurrency semaphores
 # ----------------------------
-PAGE_CONCURRENT = 20  # lower concurrency for accuracy
-ANIMEPAHE_CONCURRENT = 10
-MAL_CONCURRENT = 10
+PAGE_CONCURRENT = 6  # lower concurrency for accuracy
+ANIMEPAHE_CONCURRENT = 3
+MAL_CONCURRENT = 3
 
 page_semaphore = asyncio.Semaphore(PAGE_CONCURRENT)
 animepahe_semaphore = asyncio.Semaphore(ANIMEPAHE_CONCURRENT)
