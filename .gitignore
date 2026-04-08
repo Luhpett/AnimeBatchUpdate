@@ -1,0 +1,13 @@
+# Environment variables
+.env
+
+# Python cache files
+__pycache__/
+*.pyc
+
+# Vercel build output
+.vercel/
+
+# IDE / editor files
+.vscode/
+*.swp
