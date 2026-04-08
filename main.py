@@ -188,7 +188,7 @@ batch_offset = 0
 BATCH_SIZE = 15  # max pages per run
 
 @app.get("/batch-update-animes/")
-async def batch_update_animes(dry_run: bool = Query(True, description="If true, do not update Notion, just simulate")):
+async def batch_update_animes(dry_run: bool = Query(False, description="If true, do not update Notion, just simulate")):
     global batch_offset
 
     pages = await fetch_notion_pages()
@@ -314,4 +314,3 @@ async def batch_update_animes(dry_run: bool = Query(True, description="If true, 
         "next_start_index": batch_offset,
         "elapsed_seconds": round(elapsed_time, 2)
     }
-    
