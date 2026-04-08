@@ -16,7 +16,8 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 # ----------------------------
 load_dotenv()
 NOTION_API_KEY = os.getenv("NOTION_API_KEY")
-NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
+NOTION_DATABASE_ANIME_ID = os.getenv("NOTION_DATABASE_ANIME_ID")
+NOTION_PAGE_ANIMEPICKER_ID = os.getenv("NOTION_PAGE_ANIMEPICKER_ID")
 
 # ----------------------------
 # FastAPI setup
@@ -77,7 +78,7 @@ def similarity(a: str, b: str) -> int:
 # Notion helpers
 # ----------------------------
 async def fetch_notion_pages():
-    url = f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}/query"
+    url = f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ANIME_ID}/query"
     pages = []
     has_more = True
     cursor = None
@@ -179,29 +180,44 @@ async def get_anime_info_from_mal_id(mal_id: str) -> dict:
         animepahe_UUID = await get_animepahe(title)
         return {"episodes": episodes, "mal_score": score, "animepahe_UUID": animepahe_UUID}
 
+
 # ----------------------------
 # Batch update endpoint (accuracy-focused, with dry-run & offset)
 # ----------------------------
 
-# In-memory offset tracker (resets when server restarts)
-batch_offset = 0
-BATCH_SIZE = 15  # max pages per run
+BATCH_SIZE = 15
+
+# Notion helper for automation_index
+async def get_automation_index():
+    url = f"https://api.notion.com/v1/pages/{NOTION_PAGE_ANIMEPICKER_ID}"
+    resp = await HTTP_CLIENT.get(url, headers=HEADERS)
+    if resp.status_code != 200:
+        print(f"Failed to fetch automation_index: {resp.status_code}")
+        return 0
+    data = resp.json()
+    try:
+        return data["properties"]["automation_index"]["number"] or 0
+    except KeyError:
+        return 0
+
+async def set_automation_index(value: int):
+    url = f"https://api.notion.com/v1/pages/{NOTION_PAGE_ANIMEPICKER_ID}"
+    payload = {"properties": {"automation_index": {"number": value}}}
+    await HTTP_CLIENT.patch(url, headers=HEADERS, json=payload)
 
 @app.get("/batch-update-animes/")
-async def batch_update_animes(dry_run: bool = Query(False, description="If true, do not update Notion, just simulate")):
-    global batch_offset
-
+async def batch_update_animes(dry_run: bool = Query(True, description="If true, do not update Notion, just simulate")):
     pages = await fetch_notion_pages()
     total_pages = len(pages)
     results = []
     processed_count = 0
-
     start_time = time.perf_counter()
 
     if total_pages == 0:
         return {"total": 0, "results": [], "elapsed_seconds": 0}
 
-    # Compute which pages to process for this run
+    # Fetch current automation_index
+    batch_offset = await get_automation_index()
     start_idx = batch_offset
     end_idx = min(batch_offset + BATCH_SIZE, total_pages)
     current_batch = pages[start_idx:end_idx]
@@ -297,10 +313,13 @@ async def batch_update_animes(dry_run: bool = Query(False, description="If true,
     # Run concurrently
     await asyncio.gather(*(process_page(page, idx) for idx, page in enumerate(current_batch)))
 
-    # Update offset for next run
-    batch_offset += BATCH_SIZE
-    if batch_offset >= total_pages:
-        batch_offset = 0  # reset when end reached
+    # Update automation_index for next run (always)
+    new_offset = batch_offset + BATCH_SIZE
+    if new_offset >= total_pages:
+        new_offset = 0  # wrap around
+
+    # Always update, regardless of dry_run
+    await set_automation_index(new_offset)
 
     end_time = time.perf_counter()
     elapsed_time = end_time - start_time
@@ -311,6 +330,6 @@ async def batch_update_animes(dry_run: bool = Query(False, description="If true,
         "batch_processed": len(current_batch),
         "results": results,
         "dry_run": dry_run,
-        "next_start_index": batch_offset,
+        "next_start_index": new_offset, 
         "elapsed_seconds": round(elapsed_time, 2)
     }
