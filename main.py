@@ -7,6 +7,7 @@ from urllib.parse import quote_plus
 import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI
+from fastapi import Query
 from fastapi.responses import JSONResponse
 from tenacity import retry, stop_after_attempt, wait_exponential
 
@@ -46,9 +47,9 @@ HTTP_CLIENT = httpx.AsyncClient(
 # ----------------------------
 # Concurrency semaphores
 # ----------------------------
-PAGE_CONCURRENT = 10  # lower concurrency for accuracy
-ANIMEPAHE_CONCURRENT = 5
-MAL_CONCURRENT = 5
+PAGE_CONCURRENT = 6  # lower concurrency for accuracy
+ANIMEPAHE_CONCURRENT = 3
+MAL_CONCURRENT = 3
 
 page_semaphore = asyncio.Semaphore(PAGE_CONCURRENT)
 animepahe_semaphore = asyncio.Semaphore(ANIMEPAHE_CONCURRENT)
@@ -179,17 +180,37 @@ async def get_anime_info_from_mal_id(mal_id: str) -> dict:
         return {"episodes": episodes, "mal_score": score, "animepahe_UUID": animepahe_UUID}
 
 # ----------------------------
-# Batch update endpoint (accuracy-focused)
+# Batch update endpoint (accuracy-focused, with dry-run & offset)
 # ----------------------------
+
+# In-memory offset tracker (resets when server restarts)
+batch_offset = 0
+BATCH_SIZE = 15  # max pages per run
+
 @app.get("/batch-update-animes/")
-async def batch_update_animes_dry():
+async def batch_update_animes(dry_run: bool = Query(True, description="If true, do not update Notion, just simulate")):
+    global batch_offset
+
     pages = await fetch_notion_pages()
-    results = []
     total_pages = len(pages)
+    results = []
     processed_count = 0
 
-    start_time = time.perf_counter()  # Start timing
+    start_time = time.perf_counter()
 
+    if total_pages == 0:
+        return {"total": 0, "results": [], "elapsed_seconds": 0}
+
+    # Compute which pages to process for this run
+    start_idx = batch_offset
+    end_idx = min(batch_offset + BATCH_SIZE, total_pages)
+    current_batch = pages[start_idx:end_idx]
+
+    print(f"Processing pages {start_idx + 1} to {end_idx} of {total_pages} (dry_run={dry_run})")
+
+    # ----------------------------
+    # Process each page in this batch
+    # ----------------------------
     async def process_page(page, index):
         nonlocal processed_count
         async with page_semaphore:
@@ -211,10 +232,10 @@ async def batch_update_animes_dry():
             title = (title_prop.get("title")[0]["plain_text"].strip()
                      if title_prop and title_prop.get("title") else "Unknown")
 
-            print(f"[{index + 1}/{total_pages}] Processing: {title} (MAL ID: {mal_id})")
+            print(f"[{index + 1}/{len(current_batch)}] Processing: {title} (MAL ID: {mal_id})")
 
             if not mal_id:
-                results.append({"title": title, "would_update": None, "reason": "missing mal_id"})
+                results.append({"title": title, "updated": None, "reason": "missing mal_id"})
                 processed_count += 1
                 return
 
@@ -222,7 +243,7 @@ async def batch_update_animes_dry():
             try:
                 anime_info = await get_anime_info_from_mal_id(mal_id)
             except Exception as e:
-                results.append({"title": title, "would_update": None, "reason": f"fetch failed: {e}"})
+                results.append({"title": title, "updated": None, "reason": f"fetch failed: {e}"})
                 processed_count += 1
                 return
 
@@ -248,42 +269,48 @@ async def batch_update_animes_dry():
             if new_score is not None and current_score != new_score:
                 updates["MAL Score"] = {"rich_text": [{"text": {"content": f"{new_score:.2f} ★"}}]}
 
-            # ----------------------------
-            # AnimePahe UUID — force update if API returns a new one
-            # ----------------------------
+            # AnimePahe UUID
             new_uuid = anime_info.get("animepahe_UUID")
-            if new_uuid:
+            current_uuid_rich = props.get("AnimepaheUUID", {}).get("rich_text", [])
+            current_uuid = current_uuid_rich[0]["plain_text"] if current_uuid_rich else None
+
+            if new_uuid and (not current_uuid or current_uuid != new_uuid):
                 updates["AnimepaheUUID"] = {"rich_text": [{"text": {"content": new_uuid}}]}
 
-            # ----------------------------
-            # Log full updates with values
-            # ----------------------------
+            # Apply updates if not dry_run
             if updates:
-                results.append({"title": title, "would_update": updates})
-
-                # Prepare a readable dict for logging
-                update_preview = {}
-                for key, value in updates.items():
-                    if "rich_text" in value:
-                        update_preview[key] = value["rich_text"][0]["text"]["content"]
-                    else:
-                        update_preview[key] = value
-                print(f"[{index + 1}/{total_pages}] Updates would be applied: {update_preview}")
+                if not dry_run:
+                    await HTTP_CLIENT.patch(
+                        f"https://api.notion.com/v1/pages/{page_id}",
+                        headers=HEADERS,
+                        json={"properties": updates}
+                    )
+                results.append({"title": title, "updated": updates})
+                update_preview = {k: (v["rich_text"][0]["text"]["content"] if "rich_text" in v else v) for k, v in updates.items()}
+                print(f"[{index + 1}/{len(current_batch)}] Updates applied: {update_preview}" + (" (dry_run)" if dry_run else ""))
             else:
-                results.append({"title": title, "would_update": None, "reason": "no changes"})
-                print(f"[{index + 1}/{total_pages}] No changes needed")
+                results.append({"title": title, "updated": None, "reason": "no changes"})
+                print(f"[{index + 1}/{len(current_batch)}] No changes needed")
 
             processed_count += 1
 
-    # Process pages concurrently
-    await asyncio.gather(*(process_page(page, idx) for idx, page in enumerate(pages)))
+    # Run concurrently
+    await asyncio.gather(*(process_page(page, idx) for idx, page in enumerate(current_batch)))
 
-    end_time = time.perf_counter()  # End timing
+    # Update offset for next run
+    batch_offset += BATCH_SIZE
+    if batch_offset >= total_pages:
+        batch_offset = 0  # reset when end reached
+
+    end_time = time.perf_counter()
     elapsed_time = end_time - start_time
-    print(f"Batch update dry-run complete: processed {processed_count}/{total_pages} pages in {elapsed_time:.2f} seconds.")
+    print(f"Batch update complete: processed {processed_count}/{len(current_batch)} pages in {elapsed_time:.2f} seconds.")
 
     return {
         "total": total_pages,
+        "batch_processed": len(current_batch),
         "results": results,
+        "dry_run": dry_run,
+        "next_start_index": batch_offset,
         "elapsed_seconds": round(elapsed_time, 2)
     }
