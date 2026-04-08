@@ -314,3 +314,4 @@ async def batch_update_animes(dry_run: bool = Query(True, description="If true, 
         "next_start_index": batch_offset,
         "elapsed_seconds": round(elapsed_time, 2)
     }
+    
