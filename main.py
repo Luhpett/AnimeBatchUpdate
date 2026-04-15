@@ -94,91 +94,148 @@ async def fetch_notion_pages():
     return pages
 
 # ----------------------------
-# AnimePahe fetcher with retry
+# AnimePahe fetcher (UPDATED LOGIC)
 # ----------------------------
 @retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=1, min=4, max=20))
-async def get_animepahe(title: str) -> str | None:
-    # Check cache
-    cache_entry = animepahe_cache.get(title)
-    if cache_entry and time.time() - cache_entry['timestamp'] < CACHE_EXPIRATION:
-        return cache_entry['data']
+async def get_animepahe(jikan_data: dict) -> str | None:
+    try:
+        def normalize(t: str) -> str:
+            return re.sub(r'[^a-z0-9]', '', t.strip().lower())
 
-    async with animepahe_semaphore:
-        # await asyncio.sleep(0.1)
-        title_clean = title.strip().lower()
-        season_match = re.search(r'(?:season|part|cour|s)\s*(\d+)', title, re.IGNORECASE)
-        season_number = int(season_match.group(1)) if season_match else None
-        query = quote_plus(title)
-        url = f"https://animepahe.pw/api?m=search&q={query}"
+        # ----------------------------
+        # Extract titles (like your new version)
+        # ----------------------------
+        title_default = jikan_data.get("title")  # ROMAJI
+        title_english = jikan_data.get("title_english")
 
-        # Full headers to ensure AnimePahe accepts the request
-        headers = {
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-            "Accept-Encoding": "gzip, deflate, br, zstd",
-            "Accept-Language": "en-US,en;q=0.5",
-            "Cache-Control": "max-age=0",
-            "Cookie": "__ddgid_=Qny5tqhn2IuJLwux; __ddg2_=EYn9n6HAE66tSl1U; __ddg1_=YEsiZtjZxa7skftDfVwd; latest=6295; res=1080; aud=jpn; av1=0; __ddg9_=136.158.56.81; __ddg8_=rY5ZNuF3hi99l8iZ; __ddg10_=1761295866; XSRF-TOKEN=eyJpdiI6ImVnOTVQMXFrWFBkNWdRY3ZlSDFwOUE9PSIsInZhbHVlIjoiVkdBNXRuVlVMNU5scHRWNWRxOHA5bU10QVIrbHVsaGpqWHZTT1d6cWFCL1NaVkVZWW1seS9QZkUrNGJOZm0wZUF6M3VFSFVmdGdZbVp6ZzBGbGxUVkRLcXYxeWw2QkYwTzNVUDBQdkhVTFpWUlRzekZLcThBcW5PNlQ1YmlOOHYiLCJtYWMiOiIxMjAwYTU0MGE4MDFlZWQzZjYyODkyYjI3MGYxODdlZTA1MjIwZGFlNTJhZmRkMzg4MGQ0NzYxMWQ1MDM4MjRiIiwidGFnIjoiIn0%3D; laravel_session=eyJpdiI6Ijh4TVlydE5NZXUxSXhpZFkzcGRjSmc9PSIsInZhbHVlIjoiTkprakxkaXB4QUFtL1Vzcm1iVTJ4eFpVdnNmaDNMMitEUGFTaEM3emtvRnB0bmVXZmpqVGY4VExDbzYrdWFvREZmM1BNdjlYbFV1aHVTOGNaOUFxTEJIS0gvRXd1b0dydHZld3BaRm9wRk1PZUdtSEVLWjI0QlRaZlNROXdhSkQiLCJtYWMiOiJlZjAyMjIxZDEzZDM1ZjViY2NmZmI1NDA4Njc1NzhkYTRhZDU3NmYxNDY1NDNlNGQzNjQ5M2ZjZDYwOGY2ZDk3IiwidGFnIjoiIn0%3D",
-            "Referer": "https://animepahe.si/",
-            "Origin": "https://animepahe.si",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
-            "Sec-Fetch-User": "?1",
-            "Sec-GPC": "1",
-            "Upgrade-Insecure-Requests": "1",
-            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1",
-        }
-
-        resp = await HTTP_CLIENT.get(url, headers=headers)
-        if resp.status_code != 200:
-            print(f"AnimePahe returned {resp.status_code} for {title}")
+        if not title_default:
             return None
 
-        data = resp.json()
-        results = data.get("data", [])
-        if not results:
+        # ----------------------------
+        # CACHE CHECK (kept, but now uses romaji key stability)
+        # ----------------------------
+        cache_key = jikan_data.get("mal_id") or (title_english or title_default)
+        cache_entry = animepahe_cache.get(cache_key)
+        if cache_entry and time.time() - cache_entry["timestamp"] < CACHE_EXPIRATION:
+            return cache_entry["data"]
+
+        async with animepahe_semaphore:
+
+            query = quote_plus(title_default)
+            url = f"https://animepahe.pw/api?m=search&q={query}"
+
+            headers = {
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+                "Accept-Encoding": "gzip, deflate, br, zstd",
+                "Accept-Language": "en-US,en;q=0.5",
+                "Cache-Control": "max-age=0",
+                "Cookie": "__ddgid_=Qny5tqhn2IuJLwux; __ddg2_=EYn9n6HAE66tSl1U; __ddg1_=YEsiZtjZxa7skftDfVwd; latest=6295; res=1080; aud=jpn; av1=0; __ddg9_=136.158.56.81; __ddg8_=rY5ZNuF3hi99l8iZ; __ddg10_=1761295866; XSRF-TOKEN=eyJpdiI6ImVnOTVQMXFrWFBkNWdRY3ZlSDFwOUE9PSIsInZhbHVlIjoiVkdBNXRuVlVMNU5scHRWNWRxOHA5bU10QVIrbHVsaGpqWHZTT1d6cWFCL1NaVkVZWW1seS9QZkUrNGJOZm0wZUF6M3VFSFVmdGdZbVp6ZzBGbGxUVkRLcXYxeWw2QkYwTzNVUDBQdkhVTFpWUlRzekZLcThBcW5PNlQ1YmlOOHYiLCJtYWMiOiIxMjAwYTU0MGE4MDFlZWQzZjYyODkyYjI3MGYxODdlZTA1MjIwZGFlNTJhZmRkMzg4MGQ0NzYxMWQ1MDM4MjRiIiwidGFnIjoiIn0%3D; laravel_session=eyJpdiI6Ijh4TVlydE5NZXUxSXhpZFkzcGRjSmc9PSIsInZhbHVlIjoiTkprakxkaXB4QUFtL1Vzcm1iVTJ4eFpVdnNmaDNMMitEUGFTaEM3emtvRnB0bmVXZmpqVGY4VExDbzYrdWFvREZmM1BNdjlYbFV1aHVTOGNaOUFxTEJIS0gvRXd1b0dydHZld3BaRm9wRk1PZUdtSEVLWjI0QlRaZlNROXdhSkQiLCJtYWMiOiJlZjAyMjIxZDEzZDM1ZjViY2NmZmI1NDA4Njc1NzhkYTRhZDU3NmYxNDY1NDNlNGQzNjQ5M2ZjZDYwOGY2ZDk3IiwidGFnIjoiIn0%3D",
+                "Referer": "https://animepahe.si/",
+                "Origin": "https://animepahe.si",
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Site": "none",
+                "Sec-Fetch-User": "?1",
+                "Sec-GPC": "1",
+                "Upgrade-Insecure-Requests": "1",
+                "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1",
+            }
+
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(url, headers=headers)
+
+            if resp.status_code != 200:
+                print(f"AnimePahe API returned {resp.status_code}")
+                return None
+
+            data = resp.json()
+            results = data.get("data", [])
+            if not results:
+                return None
+
+            # 1. Try English match first
+            if title_english:
+                target = normalize(title_english)
+
+                for result in results:
+                    anime_title = normalize(result.get("title", ""))
+                    if anime_title == target:
+                        session = result.get("session")
+                        animepahe_cache[cache_key] = {
+                            "data": session,
+                            "timestamp": time.time()
+                        }
+                        return session
+
+            # 2. Fallback Romaji match
+            target_romaji = normalize(title_default)
+
+            for result in results:
+                anime_title = normalize(result.get("title", ""))
+                if anime_title == target_romaji:
+                    session = result.get("session")
+                    animepahe_cache[cache_key] = {
+                        "data": session,
+                        "timestamp": time.time()
+                    }
+                    return session
+
             return None
 
-        # Pick the best match
-        best_score = 0
-        best_session = None
-        MIN_SCORE = 5
-
-        for result in results:
-            anime_title = result.get("title", "").lower()
-            score = 0
-            if title_clean in anime_title or anime_title in title_clean:
-                score += 5
-            if season_number:
-                season_in_title = re.search(r'(?:season|part|cour|s)\s*(\d+)', anime_title, re.IGNORECASE)
-                if season_in_title and int(season_in_title.group(1)) == season_number:
-                    score += 10
-            if score > best_score:
-                best_score = score
-                best_session = result.get("session")
-
-        if best_score >= MIN_SCORE:
-            animepahe_cache[title] = {'data': best_session, 'timestamp': time.time()}
-            return best_session
-
+    except Exception as e:
+        print("AnimePahe fetch error:", e)
         return None
 
 # ----------------------------
-# MAL fetcher with retry
+# MAL fetcher with retry (FULL + fallback)
 # ----------------------------
 @retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=1, min=4, max=20))
 async def get_anime_info_from_mal_id(mal_id: str) -> dict:
     async with mal_semaphore:
         await asyncio.sleep(0.1)
-        resp = await HTTP_CLIENT.get(f"https://api.jikan.moe/v4/anime/{mal_id}/full")
-        if resp.status_code != 200:
-            raise Exception(f"MAL API failed with status {resp.status_code}")
-        data = resp.json()["data"]
+
+        try:
+            # ----------------------------
+            # Try FULL endpoint first
+            # ----------------------------
+            resp = await HTTP_CLIENT.get(f"https://api.jikan.moe/v4/anime/{mal_id}/full")
+
+            if resp.status_code != 200:
+
+                # ----------------------------
+                # Fallback endpoint (NO /full)
+                # ----------------------------
+                resp = await HTTP_CLIENT.get(f"https://api.jikan.moe/v4/anime/{mal_id}")
+
+                if resp.status_code != 200:
+                    raise Exception(f"MAL API failed with status {resp.status_code}")
+
+            data = resp.json().get("data") or {}
+
+        except httpx.RequestError as e:
+            raise Exception(f"Jikan request error: {str(e)}")
+
+        # ----------------------------
+        # Safe parsing
+        # ----------------------------
         episodes = data.get("episodes")
-        score = f"{data['score']:.2f} ★" if data.get("score") else None
-        title = data.get("title_english") or data.get("title")
-        animepahe_UUID = await get_animepahe(title)
-        return {"episodes": episodes, "mal_score": score, "animepahe_UUID": animepahe_UUID}
+
+        score_val = data.get("score")
+        score = (
+            f"{score_val:.2f} ★"
+            if isinstance(score_val, (int, float))
+            else None
+        )
+
+        title = data.get("title_english") or data.get("title") or "Unknown"
+
+        animepahe_UUID = await get_animepahe(data)
+
+        return {
+            "episodes": episodes,
+            "mal_score": score,
+            "animepahe_UUID": animepahe_UUID
+        }
 
 
 # ----------------------------
@@ -206,7 +263,7 @@ async def set_automation_index(value: int):
     await HTTP_CLIENT.patch(url, headers=HEADERS, json=payload)
 
 @app.get("/batch-update-animes/")
-async def batch_update_animes(dry_run: bool = Query(False, description="If true, do not update Notion, just simulate")):
+async def batch_update_animes(dry_run: bool = Query(True, description="If True, do not update Notion, just simulate")):
     pages = await fetch_notion_pages()
     total_pages = len(pages)
     results = []
