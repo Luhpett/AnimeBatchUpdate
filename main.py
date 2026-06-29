@@ -172,9 +172,6 @@ async def get_animepahe(jikan_data: dict) -> str | None:
         return None
 
 
-# ----------------------------
-# Netflix TMDB Checker
-# ----------------------------
 async def check_netflix_tmdb(title: str) -> bool:
     try:
         def extract_season_number(title: str):
@@ -292,93 +289,106 @@ async def check_netflix_tmdb(title: str) -> bool:
                 if not results:
                     continue
 
-                # -----------------------------------
-                # Choose best matching title
-                # -----------------------------------
-                best_match = None
+                # Check multiple possible matches
+                for result in results[:5]:
+                    item_id = result["id"]
 
-                for result in results:
                     tmdb_title = (
                         result.get("name")
                         or result.get("title")
                         or ""
                     )
 
+                    # Prefer exact match
                     if (
                         tmdb_title.lower()
-                        == search_title.lower()
+                        != search_title.lower()
+                        and results.index(result) > 0
                     ):
-                        best_match = result
-                        break
+                        continue
 
-                if best_match is None:
-                    best_match = results[0]
+                    # -----------------------------------
+                    # Verify season exists
+                    # -----------------------------------
+                    if (
+                        media_type == "tv"
+                        and season_number is not None
+                    ):
+                        tv_resp = await client.get(
+                            f"https://api.themoviedb.org/3/tv/{item_id}",
+                            params={
+                                "api_key": TMDB_API_KEY
+                            }
+                        )
 
-                item_id = best_match["id"]
+                        if tv_resp.status_code != 200:
+                            continue
 
-                # -----------------------------------
-                # Verify season exists
-                # -----------------------------------
-                if (
-                    media_type == "tv"
-                    and season_number is not None
-                ):
-                    tv_resp = await client.get(
-                        f"https://api.themoviedb.org/3/tv/{item_id}",
+                        seasons = (
+                            tv_resp.json()
+                            .get("seasons", [])
+                        )
+
+                        season_exists = any(
+                            season.get(
+                                "season_number"
+                            ) == season_number
+                            for season in seasons
+                        )
+
+                        # Handle TMDB merged seasons.
+                        # Example:
+                        # Apothecary Diaries S1+S2 = 48 eps.
+                        if (
+                            not season_exists
+                            and season_number > 1
+                        ):
+                            real_seasons = [
+                                s
+                                for s in seasons
+                                if s.get(
+                                    "season_number",
+                                    0
+                                ) > 0
+                            ]
+
+                            if len(real_seasons) <= 1:
+                                season_exists = True
+
+                        if not season_exists:
+                            continue
+
+                    # -----------------------------------
+                    # Netflix PH provider check
+                    # -----------------------------------
+                    wp_resp = await client.get(
+                        f"https://api.themoviedb.org/3/{media_type}/{item_id}/watch/providers",
                         params={
                             "api_key": TMDB_API_KEY
                         }
                     )
 
-                    if tv_resp.status_code != 200:
+                    if wp_resp.status_code != 200:
                         continue
 
-                    seasons = (
-                        tv_resp.json()
-                        .get("seasons", [])
+                    ph_data = (
+                        wp_resp.json()
+                        .get("results", {})
+                        .get("PH", {})
                     )
 
-                    season_exists = any(
-                        season.get(
-                            "season_number"
-                        ) == season_number
-                        for season in seasons
-                    )
-
-                    if not season_exists:
-                        continue
-
-                # -----------------------------------
-                # Netflix PH provider check
-                # -----------------------------------
-                wp_resp = await client.get(
-                    f"https://api.themoviedb.org/3/{media_type}/{item_id}/watch/providers",
-                    params={
-                        "api_key": TMDB_API_KEY
-                    }
-                )
-
-                if wp_resp.status_code != 200:
-                    continue
-
-                ph_data = (
-                    wp_resp.json()
-                    .get("results", {})
-                    .get("PH", {})
-                )
-
-                for provider in ph_data.get(
-                    "flatrate",
-                    []
-                ):
-                    if (
-                        provider.get(
-                            "provider_name",
-                            ""
-                        ).lower()
-                        == "netflix"
+                    for provider in ph_data.get(
+                        "flatrate",
+                        []
                     ):
-                        return True
+                        if (
+                            provider.get(
+                                "provider_name",
+                                ""
+                            ).lower()
+                            == "netflix"
+                        ):
+                            return True
 
         return False
 
