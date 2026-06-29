@@ -16,6 +16,7 @@ load_dotenv()
 NOTION_API_KEY = os.getenv("NOTION_API_KEY")
 NOTION_DATABASE_ANIME_ID = os.getenv("NOTION_DATABASE_ANIME_ID")
 NOTION_PAGE_ANIMEPICKER_ID = os.getenv("NOTION_PAGE_ANIMEPICKER_ID")
+TMDB_API_KEY = os.getenv("TMDB_API_KEY")
 
 # ----------------------------
 # FastAPI setup
@@ -170,6 +171,223 @@ async def get_animepahe(jikan_data: dict) -> str | None:
         print("AnimePahe fetch error:", e)
         return None
 
+
+# ----------------------------
+# Netflix TMDB Checker
+# ----------------------------
+async def check_netflix_tmdb(title: str) -> bool:
+    try:
+        def extract_season_number(title: str):
+            patterns = [
+                r'(\d+)(?:st|nd|rd|th)\s+season',
+                r'season\s+(\d+)',
+                r'\bs(\d+)\b',
+                r'part\s+(\d+)',
+                r'(\d+)(?:st|nd|rd|th)\s+part',
+                r'cour\s+(\d+)',
+                r'(\d+)(?:st|nd|rd|th)\s+cour'
+            ]
+
+            for pattern in patterns:
+                m = re.search(
+                    pattern,
+                    title,
+                    re.IGNORECASE
+                )
+                if m:
+                    return int(m.group(1))
+
+            roman_map = {
+                "ii": 2,
+                "iii": 3,
+                "iv": 4,
+                "v": 5,
+                "vi": 6
+            }
+
+            m = re.search(
+                r'\b(ii|iii|iv|v|vi)\b',
+                title,
+                re.IGNORECASE
+            )
+
+            if m:
+                return roman_map[
+                    m.group(1).lower()
+                ]
+
+            return None
+
+        season_number = extract_season_number(
+            title
+        )
+
+        search_title = title
+
+        if season_number:
+            patterns_to_remove = [
+                r'(\d+)(?:st|nd|rd|th)\s+season',
+                r'season\s+\d+',
+                r'\bs\d+\b',
+                r'part\s+\d+',
+                r'(\d+)(?:st|nd|rd|th)\s+part',
+                r'part\s+(ii|iii|iv|v|vi)\b',
+                r'cour\s+\d+',
+                r'(\d+)(?:st|nd|rd|th)\s+cour',
+                r'\bii\b',
+                r'\biii\b',
+                r'\biv\b',
+                r'\bv\b',
+                r'\bvi\b'
+            ]
+
+            for pattern in patterns_to_remove:
+                search_title = re.sub(
+                    pattern,
+                    '',
+                    search_title,
+                    flags=re.IGNORECASE
+                )
+
+            search_title = re.sub(
+                r'\s+',
+                ' ',
+                search_title
+            ).strip()
+
+        async with httpx.AsyncClient(
+            timeout=10
+        ) as client:
+
+            tasks = [
+                client.get(
+                    f"https://api.themoviedb.org/3/search/{media_type}",
+                    params={
+                        "api_key": TMDB_API_KEY,
+                        "query": search_title
+                    }
+                )
+                for media_type in [
+                    "tv",
+                    "movie"
+                ]
+            ]
+
+            responses = await asyncio.gather(
+                *tasks
+            )
+
+            for media_type, resp in zip(
+                ["tv", "movie"],
+                responses
+            ):
+                if resp.status_code != 200:
+                    continue
+
+                results = (
+                    resp.json()
+                    .get("results", [])
+                )
+
+                if not results:
+                    continue
+
+                # -----------------------------------
+                # Choose best matching title
+                # -----------------------------------
+                best_match = None
+
+                for result in results:
+                    tmdb_title = (
+                        result.get("name")
+                        or result.get("title")
+                        or ""
+                    )
+
+                    if (
+                        tmdb_title.lower()
+                        == search_title.lower()
+                    ):
+                        best_match = result
+                        break
+
+                if best_match is None:
+                    best_match = results[0]
+
+                item_id = best_match["id"]
+
+                # -----------------------------------
+                # Verify season exists
+                # -----------------------------------
+                if (
+                    media_type == "tv"
+                    and season_number is not None
+                ):
+                    tv_resp = await client.get(
+                        f"https://api.themoviedb.org/3/tv/{item_id}",
+                        params={
+                            "api_key": TMDB_API_KEY
+                        }
+                    )
+
+                    if tv_resp.status_code != 200:
+                        continue
+
+                    seasons = (
+                        tv_resp.json()
+                        .get("seasons", [])
+                    )
+
+                    season_exists = any(
+                        season.get(
+                            "season_number"
+                        ) == season_number
+                        for season in seasons
+                    )
+
+                    if not season_exists:
+                        continue
+
+                # -----------------------------------
+                # Netflix PH provider check
+                # -----------------------------------
+                wp_resp = await client.get(
+                    f"https://api.themoviedb.org/3/{media_type}/{item_id}/watch/providers",
+                    params={
+                        "api_key": TMDB_API_KEY
+                    }
+                )
+
+                if wp_resp.status_code != 200:
+                    continue
+
+                ph_data = (
+                    wp_resp.json()
+                    .get("results", {})
+                    .get("PH", {})
+                )
+
+                for provider in ph_data.get(
+                    "flatrate",
+                    []
+                ):
+                    if (
+                        provider.get(
+                            "provider_name",
+                            ""
+                        ).lower()
+                        == "netflix"
+                    ):
+                        return True
+
+        return False
+
+    except Exception as e:
+        print(
+            f"TMDB error for '{title}': {e}"
+        )
+        return False
+
 # ----------------------------
 # MAL fetcher with retry (FULL + fallback)
 # ----------------------------
@@ -213,12 +431,15 @@ async def get_anime_info_from_mal_id(mal_id: str) -> dict:
 
         title = data.get("title_english") or data.get("title") or "Unknown"
 
+        netflix_available = await check_netflix_tmdb(title)
+
         animepahe_UUID = await get_animepahe(data)
 
         return {
             "episodes": episodes,
             "mal_score": score,
-            "animepahe_UUID": animepahe_UUID
+            "animepahe_UUID": animepahe_UUID,
+            "netflix_available": netflix_available
         }
 
 
@@ -247,7 +468,7 @@ async def set_automation_index(value: int):
     await HTTP_CLIENT.patch(url, headers=HEADERS, json=payload)
 
 @app.get("/batch-update-animes/")
-async def batch_update_animes(dry_run: bool = Query(False, description="If True, do not update Notion, just simulate")):
+async def batch_update_animes(dry_run: bool = Query(True, description="If True, do not update Notion, just simulate")):
     pages = await fetch_notion_pages()
     total_pages = len(pages)
     results = []
@@ -330,6 +551,19 @@ async def batch_update_animes(dry_run: bool = Query(False, description="If True,
             new_uuid = anime_info.get("animepahe_UUID")
             current_uuid_rich = props.get("AnimepaheUUID", {}).get("rich_text", [])
             current_uuid = current_uuid_rich[0]["plain_text"] if current_uuid_rich else None
+
+            # Netflix Availability
+            current_netflix = (
+                props.get("Netflix Availability", {})
+                .get("checkbox", False)
+            )
+
+            new_netflix = anime_info.get("netflix_available")
+
+            if new_netflix != current_netflix:
+                updates["Netflix Availability"] = {
+                    "checkbox": new_netflix
+                }
 
             if new_uuid and (not current_uuid or current_uuid != new_uuid):
                 updates["AnimepaheUUID"] = {"rich_text": [{"text": {"content": new_uuid}}]}
