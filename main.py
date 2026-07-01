@@ -424,6 +424,37 @@ async def get_anime_info_from_mal_id(mal_id: str) -> dict:
 
             data = resp.json().get("data") or {}
 
+            # Parse aired date
+            aired_from = None
+            from_prop = (
+                data.get("aired", {})
+                .get("prop", {})
+                .get("from")
+            )
+
+            if (
+                from_prop
+                and from_prop.get("year")
+                and from_prop.get("month")
+                and from_prop.get("day")
+            ):
+                from datetime import datetime
+
+                aired_from = datetime(
+                    from_prop["year"],
+                    from_prop["month"],
+                    from_prop["day"]
+                ).date().isoformat()
+
+            broadcast_info = data.get("broadcast", {}) or {}
+
+            broadcast = {
+                "day": broadcast_info.get("day"),
+                "time": broadcast_info.get("time"),
+                "timezone": broadcast_info.get("timezone"),
+                "string": broadcast_info.get("string")
+            }
+
         except httpx.RequestError as e:
             raise Exception(f"Jikan request error: {str(e)}")
 
@@ -449,12 +480,14 @@ async def get_anime_info_from_mal_id(mal_id: str) -> dict:
             "episodes": episodes,
             "mal_score": score,
             "animepahe_UUID": animepahe_UUID,
-            "netflix_available": netflix_available
+            "netflix_available": netflix_available,
+            "aired": aired_from,
+            "broadcast": broadcast
         }
 
 
 # ----------------------------
-# Batch update endpoint (accuracy-focused, with dry-run & offset)
+# Batch update endpoint
 # ----------------------------
 
 BATCH_SIZE = 15
@@ -478,7 +511,7 @@ async def set_automation_index(value: int):
     await HTTP_CLIENT.patch(url, headers=HEADERS, json=payload)
 
 @app.get("/batch-update-animes/")
-async def batch_update_animes(dry_run: bool = Query(False, description="If True, do not update Notion, just simulate")):
+async def batch_update_animes(dry_run: bool = Query(True, description="If True, do not update Notion, just simulate")):
     pages = await fetch_notion_pages()
     total_pages = len(pages)
     results = []
@@ -542,6 +575,85 @@ async def batch_update_animes(dry_run: bool = Query(False, description="If True,
             new_eps = anime_info.get("episodes")
             if new_eps is not None and (current_eps is None or int(current_eps) != int(new_eps)):
                 updates["Episodes"] = {"number": new_eps}
+
+            # Broadcast Infos
+            broadcast = anime_info.get("broadcast", {})
+
+            # Aired Date
+            new_aired = anime_info.get("aired")
+            current_aired = (
+                (props.get("Aired", {}).get("date") or {})
+                .get("start")
+            )
+
+            if new_aired and current_aired != new_aired:
+                updates["Aired"] = {
+                    "date": {
+                        "start": new_aired
+                    }
+                }
+
+            # Air Day (Select)
+            new_day = broadcast.get("day")
+            current_day = (
+                (props.get("Air Day", {}).get("select") or {})
+                .get("name")
+            )
+
+            if new_day and current_day != new_day:
+                updates["Air Day"] = {
+                    "select": {
+                        "name": new_day
+                    }
+                }
+
+            # Air Time
+            new_air_time = broadcast.get("time")
+            current_air_time_rich = (
+                props.get("Air Time", {})
+                .get("rich_text", [])
+            )
+
+            current_air_time = (
+                current_air_time_rich[0]["plain_text"]
+                if current_air_time_rich
+                else None
+            )
+
+            if new_air_time and current_air_time != new_air_time:
+                updates["Air Time"] = {
+                    "rich_text": [
+                        {
+                            "text": {
+                                "content": new_air_time
+                            }
+                        }
+                    ]
+                }
+
+            # Timezone
+            new_timezone = broadcast.get("timezone")
+            current_timezone_rich = (
+                props.get("Timezone", {})
+                .get("rich_text", [])
+            )
+
+            current_timezone = (
+                current_timezone_rich[0]["plain_text"]
+                if current_timezone_rich
+                else None
+            )
+
+            if new_timezone and current_timezone != new_timezone:
+                updates["Timezone"] = {
+                    "rich_text": [
+                        {
+                            "text": {
+                                "content": new_timezone
+                            }
+                        }
+                    ]
+                }
 
             # MAL Score
             mal_score_rich = props.get("MAL Score", {}).get("rich_text", [])
