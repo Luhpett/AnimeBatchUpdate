@@ -124,7 +124,7 @@ async def get_animepahe(jikan_data: dict) -> str | None:
             return cache_entry["data"]
 
         resp = await HTTP_CLIENT.get(
-            "https://animepahe-sessions.vercel.app/animepahe.js"
+            "https://animepahe-sessions.vercel.app/animepahe.json"
         )
 
         if resp.status_code != 200:
