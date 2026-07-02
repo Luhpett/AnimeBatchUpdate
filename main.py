@@ -670,7 +670,7 @@ async def batch_update_animes(dry_run: bool = Query(False, description="If True,
             current_score_raw = mal_score_rich[0].get("plain_text") if mal_score_rich else None
 
             def parse_score(s):
-                if not s or s.strip() in ["N/A ★", ""]:
+                if not s or s.strip() in ["0.00 ★", ""]:
                     return None
                 return float(s.strip().replace("★", "").strip())
 
