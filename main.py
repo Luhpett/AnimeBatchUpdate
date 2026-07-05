@@ -47,8 +47,8 @@ HTTP_CLIENT = httpx.AsyncClient(
 # ----------------------------
 # Concurrency semaphores
 # ----------------------------
-PAGE_CONCURRENT = 4  # lower concurrency for accuracy
-MAL_CONCURRENT = 2
+PAGE_CONCURRENT = 4  # ATOMIC (TMDB, Jikan, AnimePahe, Notion) requests per page
+MAL_CONCURRENT = 1 # (Jikan per page concurrent)
 
 page_semaphore = asyncio.Semaphore(PAGE_CONCURRENT)
 mal_semaphore = asyncio.Semaphore(MAL_CONCURRENT)
@@ -404,7 +404,7 @@ async def check_netflix_tmdb(title: str) -> bool:
 @retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=1, min=4, max=20))
 async def get_anime_info_from_mal_id(mal_id: str) -> dict:
     async with mal_semaphore:
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(1)
 
         try:
             # ----------------------------
@@ -420,7 +420,7 @@ async def get_anime_info_from_mal_id(mal_id: str) -> dict:
                 resp = await HTTP_CLIENT.get(f"https://api.jikan.moe/v4/anime/{mal_id}")
 
                 if resp.status_code != 200:
-                    raise Exception(f"MAL API failed with status {resp.status_code}")
+                    raise Exception(f"Jikan API failed with status {resp.status_code}")
 
             data = resp.json().get("data") or {}
 
@@ -490,7 +490,7 @@ async def get_anime_info_from_mal_id(mal_id: str) -> dict:
 # Batch update endpoint
 # ----------------------------
 
-BATCH_SIZE = 15 
+BATCH_SIZE = 20
 
 # Notion helper for automation_index
 async def get_automation_index():
