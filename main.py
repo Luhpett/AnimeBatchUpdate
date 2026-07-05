@@ -490,7 +490,7 @@ async def get_anime_info_from_mal_id(mal_id: str) -> dict:
 # Batch update endpoint
 # ----------------------------
 
-BATCH_SIZE = 20 
+BATCH_SIZE = 15 
 
 # Notion helper for automation_index
 async def get_automation_index():
