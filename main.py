@@ -47,8 +47,8 @@ HTTP_CLIENT = httpx.AsyncClient(
 # ----------------------------
 # Concurrency semaphores
 # ----------------------------
-PAGE_CONCURRENT = 4  # ATOMIC (TMDB, Jikan, AnimePahe, Notion) requests per page
-MAL_CONCURRENT = 1 # (Jikan per page concurrent)
+PAGE_CONCURRENT = 4  # ATOMIC (TMDB, Tenrai, AnimePahe, Notion) requests per page
+MAL_CONCURRENT = 1 # (Tenrai per page concurrent)
 
 page_semaphore = asyncio.Semaphore(PAGE_CONCURRENT)
 mal_semaphore = asyncio.Semaphore(MAL_CONCURRENT)
@@ -97,20 +97,20 @@ async def fetch_notion_pages():
     stop=stop_after_attempt(5),
     wait=wait_exponential(multiplier=1, min=4, max=20)
 )
-async def get_animepahe(jikan_data: dict) -> str | None:
+async def get_animepahe(tenrai_data: dict) -> str | None:
     try:
         def normalize(t: str) -> str:
             return re.sub(r'[^a-z0-9]', '', t.strip().lower())
 
-        title_default = jikan_data.get("title")
-        title_english = jikan_data.get("title_english")
+        title_default = tenrai_data.get("title")
+        title_english = tenrai_data.get("title_english")
 
         if not title_default:
             return None
 
         # Cache check
         cache_key = (
-            jikan_data.get("mal_id")
+            tenrai_data.get("mal_id")
             or title_english
             or title_default
         )
@@ -410,17 +410,17 @@ async def get_anime_info_from_mal_id(mal_id: str) -> dict:
             # ----------------------------
             # Try FULL endpoint first
             # ----------------------------
-            resp = await HTTP_CLIENT.get(f"https://api.jikan.moe/v4/anime/{mal_id}/full")
+            resp = await HTTP_CLIENT.get(f"https://api.tenrai.org/v1/anime/{mal_id}/full")
 
             if resp.status_code != 200:
 
                 # ----------------------------
                 # Fallback endpoint (NO /full)
                 # ----------------------------
-                resp = await HTTP_CLIENT.get(f"https://api.jikan.moe/v4/anime/{mal_id}")
+                resp = await HTTP_CLIENT.get(f"https://api.tenrai.org/v1/anime/{mal_id}")
 
                 if resp.status_code != 200:
-                    raise Exception(f"Jikan API failed with status {resp.status_code}")
+                    raise Exception(f"Tenrai API failed with status {resp.status_code}")
 
             data = resp.json().get("data") or {}
 
@@ -456,7 +456,7 @@ async def get_anime_info_from_mal_id(mal_id: str) -> dict:
             }
 
         except httpx.RequestError as e:
-            raise Exception(f"Jikan request error: {str(e)}")
+            raise Exception(f"Tenrai request error: {str(e)}")
 
         # ----------------------------
         # Safe parsing
